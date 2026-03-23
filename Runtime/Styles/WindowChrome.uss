@@ -1,0 +1,60 @@
+.mosaic-window {
+    background-color: rgba(30, 30, 30, 0.95);
+    border-width: 1px;
+    border-color: rgba(80, 80, 80, 1);
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.mosaic-window__title-bar {
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+    background-color: rgba(50, 50, 50, 1);
+    height: 28px;
+    padding-left: 8px;
+    padding-right: 4px;
+    cursor: initial;
+}
+
+.mosaic-window__title {
+    color: rgba(220, 220, 220, 1);
+    font-size: 12px;
+    -unity-font-style: bold;
+    flex-grow: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.mosaic-window__close-button {
+    width: 20px;
+    height: 20px;
+    font-size: 12px;
+    border-width: 0;
+    background-color: rgba(0, 0, 0, 0);
+    color: rgba(180, 180, 180, 1);
+    -unity-text-align: middle-center;
+    border-radius: 2px;
+    margin: 0;
+    padding: 0;
+}
+
+.mosaic-window__close-button:hover {
+    background-color: rgba(200, 50, 50, 1);
+    color: rgba(255, 255, 255, 1);
+}
+
+.mosaic-window__content {
+    flex-grow: 1;
+    overflow: hidden;
+}
+
+.mosaic-window__resize-handle {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    width: 16px;
+    height: 16px;
+    cursor: initial;
+}

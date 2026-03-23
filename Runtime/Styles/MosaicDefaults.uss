@@ -1,0 +1,15 @@
+/* DataList defaults */
+.mosaic-data-list {
+    flex-grow: 1;
+    min-height: 100px;
+}
+
+.mosaic-data-list__item {
+    padding: 4px 8px;
+    border-bottom-width: 1px;
+    border-bottom-color: rgba(60, 60, 60, 1);
+}
+
+.mosaic-data-list__item:hover {
+    background-color: rgba(60, 60, 60, 0.5);
+}
