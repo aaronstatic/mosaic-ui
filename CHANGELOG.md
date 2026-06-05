@@ -4,6 +4,35 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.1.1] - 2026-06-06
+
+### Added
+
+- **Interaction System** (new `Runtime/Interaction/` module, `Mosaic.UI` namespace)
+  - `CommandRegistry` — directed, one-handler-per-id command dispatch. `Register(id, Action)` and `Register<T>(id, Action<T>)` return `IDisposable` unregistration tokens; `Invoke(id)` / `Invoke<T>(id, payload)` call the registered handler; `Has(id)`, `RegisteredIds` (a snapshot, not a live reference), and `Clear()` for introspection/lifecycle
+  - Strict error contract: `Invoke` on an unregistered id, a duplicate `Register` of a live id, and arity/type mismatches all throw `InvalidOperationException` with messages naming the id and the expected vs supplied type; null/empty ids throw `ArgumentNullException`/`ArgumentException`
+  - `CallbackDisposable` — internal, idempotent unhook `IDisposable` shared by the `Bind*` helpers
+
+- **Static Facade**
+  - `MosaicUI.Commands` — global `CommandRegistry`, constructed by `Initialize()` and cleared/nulled by `Shutdown()` alongside `Services` and `Events`
+
+- **Panel Interaction Helpers** (on `PanelController`)
+  - `BindClick(string, Action)` / `BindClick(Button, Action)` — wires a button's `clicked` event and auto-adds an unhook disposable to `Subscriptions`; the by-name overload throws `InvalidOperationException` if no `Button` with that name exists in the panel root
+  - `BindValue<TValue>(string, Func<TValue>, Action<TValue>)` / `BindValue<TValue>(BaseField<TValue>, Func<TValue>, Action<TValue>)` — two-way binds a `BaseField<TValue>` to a store value: pushes the initial value with `SetValueWithoutNotify` and writes back on `ChangeEvent<TValue>`, guarded by `EqualityComparer<TValue>.Default` to prevent feedback loops (v1: does not push future external store changes back to the field)
+  - `BindCommand(string, string)` / `BindCommand<T>(string, string, Func<T>)` — wires a button click to `MosaicUI.Commands.Invoke`, with an optional click-time payload factory
+  - `Commands` protected accessor — shorthand for `MosaicUI.Commands` from within a controller
+
+- **Tests**
+  - Edit Mode suites: `CommandRegistryTests`, `PanelControllerBindTests`, `StoreActionTests`
+  - `Runtime/AssemblyInfo.cs` exposes `Mosaic.UI` internals to `Mosaic.UI.Tests` via `InternalsVisibleTo` (enables direct `CallbackDisposable` and internal-setter coverage)
+
+- **Documentation**
+  - `Documentation~/Interaction.md` — the write-loop layers (store actions, managed `Bind*` helpers, named commands), commands-vs-events guidance, command-id namespacing convention, and the headless testing discipline
+
+### Changed
+
+- `Documentation~/Stores.md` — documents the `Bind*` interaction helpers for click/field handlers and notes the three static facade members (`Services` / `Events` / `Commands`)
+
 ## [0.1.0] - 2026-03-23
 
 ### Added

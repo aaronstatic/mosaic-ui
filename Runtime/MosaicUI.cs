@@ -6,6 +6,7 @@ namespace Mosaic.UI
     {
         public static ServiceRegistry Services { get; private set; }
         public static EventBus Events { get; private set; }
+        public static CommandRegistry Commands { get; private set; }
 
         public static bool IsInitialized { get; private set; }
 
@@ -16,6 +17,7 @@ namespace Mosaic.UI
 
             Services = new ServiceRegistry();
             Events = new EventBus();
+            Commands = new CommandRegistry();
             IsInitialized = true;
         }
 
@@ -24,8 +26,10 @@ namespace Mosaic.UI
             if (!IsInitialized)
                 return;
 
+            Commands.Clear();
             Events.Clear();
             Services.Clear();
+            Commands = null;
             Events = null;
             Services = null;
             IsInitialized = false;

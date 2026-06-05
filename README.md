@@ -12,7 +12,7 @@ MosaicUI is a UI framework for Unity that treats the game's screen layout as a c
 
 State is handled through stores inspired by Zustand. Each store is a plain C# class that extends `Store<TSelf>`, uses `SetProperty` to mutate properties, and notifies subscribers only when the selected slice of state actually changes. Stores integrate directly with UI Toolkit's data binding system via `INotifyBindablePropertyChanged`, so both manual subscriptions and UXML data bindings work from the same source.
 
-The framework also includes an optional floating window system, a `DataList` component wrapping `ListView` for data-bound lists, a lightweight service locator (`ServiceRegistry`), and a typed publish/subscribe event bus (`EventBus`). All of these components are optional — you can use the panel and mode system without windows, or use stores standalone without the rest of the framework.
+The framework also includes managed interaction helpers on `PanelController` and a named command dispatch registry (`CommandRegistry`) for routing clicks and field edits back into state, an optional floating window system, a `DataList` component wrapping `ListView` for data-bound lists, a lightweight service locator (`ServiceRegistry`), and a typed publish/subscribe event bus (`EventBus`). All of these components are optional — you can use the panel and mode system without windows, or use stores standalone without the rest of the framework.
 
 ### Key benefits
 
@@ -181,6 +181,32 @@ Subscriptions.Add(store.Subscribe(s => s.HullIntegrity, hp =>
 Subscriptions are stored in the controller's `Subscriptions` group and disposed automatically when the panel is torn down.
 
 See [Documentation~/Stores.md](Documentation~/Stores.md) for a complete guide.
+
+### Interaction
+
+If stores are the *read* loop, interaction is the *write* loop: button clicks and field edits flow back into state through a single, predictable path. `PanelController` provides managed `Bind*` helpers that wire a UI callback and automatically add an unhook `IDisposable` to the controller's `Subscriptions` group, so no manual cleanup is needed on dispose:
+
+```csharp
+public override void OnBind()
+{
+    var store = GetStore<CounterStore>();
+
+    BindClick("increment-btn", store.Increment);                       // button → store action
+    BindValue<string>("note-field", () => store.Note, store.SetNote);  // two-way field bind
+    BindCommand("reset-btn", "counter/reset");                         // button → named command
+}
+```
+
+For directed, decoupled dispatch, `MosaicUI.Commands` is a `CommandRegistry` — a one-handler-per-id command bus, distinct from the broadcast `EventBus`. Handlers register with an `IDisposable` token (add it to `Subscriptions` for auto-cleanup) and are invoked by id:
+
+```csharp
+Subscriptions.Add(MosaicUI.Commands.Register("counter/reset", store.Reset));
+MosaicUI.Commands.Invoke("counter/reset");
+```
+
+Because every interaction is reachable without a pointer event, behavior is verifiable headlessly: tests call the store action or `Commands.Invoke(id)` directly and assert resulting state.
+
+See [Documentation~/Interaction.md](Documentation~/Interaction.md) for a complete guide.
 
 ### Panels
 
@@ -395,9 +421,10 @@ MosaicUIManager.SetMode(newMode)
 |---|---|
 | `MosaicUI.Services` | The global `ServiceRegistry` instance |
 | `MosaicUI.Events` | The global `EventBus` instance |
+| `MosaicUI.Commands` | The global `CommandRegistry` instance |
 | `MosaicUI.IsInitialized` | Whether the framework has been initialized |
-| `MosaicUI.Initialize()` | Create Services and Events. Idempotent. |
-| `MosaicUI.Shutdown()` | Dispose Services and Events. |
+| `MosaicUI.Initialize()` | Create Services, Events, and Commands. Idempotent. |
+| `MosaicUI.Shutdown()` | Clear and null Services, Events, and Commands. |
 
 ### ServiceRegistry
 
@@ -417,6 +444,18 @@ MosaicUIManager.SetMode(newMode)
 | `Publish<T>(message)` | Publish a message to all subscribers of type T |
 | `Clear()` | Remove all subscriptions |
 
+### CommandRegistry
+
+| Member | Description |
+|---|---|
+| `Register(id, Action)` | Register a parameterless command; returns an `IDisposable` unregister token |
+| `Register<T>(id, Action<T>)` | Register a command with a typed payload; returns an `IDisposable` token |
+| `Invoke(id)` | Invoke a parameterless command; throws if unregistered or arity-mismatched |
+| `Invoke<T>(id, payload)` | Invoke a typed command; throws if unregistered or type-mismatched |
+| `Has(id)` | Whether a command id is currently registered |
+| `RegisteredIds` | Snapshot `IReadOnlyCollection<string>` of registered ids |
+| `Clear()` | Remove all registrations |
+
 ### Store\<TSelf\>
 
 | Member | Description |
@@ -434,6 +473,10 @@ MosaicUIManager.SetMode(newMode)
 | `Services` | The `ServiceRegistry` injected at bind time |
 | `Subscriptions` | `SubscriptionGroup` — add store/event subs here |
 | `GetStore<T>()` | Shorthand for `Services.Get<T>()` |
+| `Commands` | Shorthand for `MosaicUI.Commands` (the global `CommandRegistry`) |
+| `BindClick(name/button, handler)` | Wire a button's `clicked` event; auto-unhooked on dispose |
+| `BindValue<T>(name/field, getter, setter)` | Two-way bind a `BaseField<T>` to a store value |
+| `BindCommand(name, commandId)` | Wire a button click to `Commands.Invoke(commandId)` |
 | `OnBind()` | Override: query elements, set up subscriptions |
 | `OnShow()` | Override: panel is becoming visible |
 | `OnHide()` | Override: panel is being hidden |
@@ -469,9 +512,13 @@ MosaicUIManager.SetMode(newMode)
 com.aaronstatic.mosaic-ui/
 ├── Runtime/
 │   ├── MosaicUI.cs                  # Static entry point
+│   ├── AssemblyInfo.cs              # InternalsVisibleTo Mosaic.UI.Tests
 │   ├── Core/
 │   │   ├── ServiceRegistry.cs
 │   │   └── EventBus.cs              # Includes SubscriptionGroup
+│   ├── Interaction/
+│   │   ├── CommandRegistry.cs       # Named command dispatch
+│   │   └── CallbackDisposable.cs    # Internal unhook IDisposable
 │   ├── State/
 │   │   ├── Store.cs
 │   │   └── StoreSubscription.cs
@@ -509,11 +556,15 @@ com.aaronstatic.mosaic-ui/
 │       ├── ServiceRegistryTests.cs
 │       ├── EventBusTests.cs
 │       ├── StoreTests.cs
+│       ├── StoreActionTests.cs
+│       ├── CommandRegistryTests.cs
+│       ├── PanelControllerBindTests.cs
 │       ├── ModeHistoryTests.cs
 │       └── WindowManagerTests.cs
 ├── Documentation~/
 │   ├── GettingStarted.md
 │   ├── Stores.md
+│   ├── Interaction.md
 │   ├── Modes.md
 │   └── Windows.md
 ├── CHANGELOG.md

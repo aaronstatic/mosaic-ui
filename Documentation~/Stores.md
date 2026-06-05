@@ -139,7 +139,9 @@ Anonymous tuples implement structural equality in C#, so the callback fires when
 
 ### Subscription lifetime
 
-All subscriptions added to a controller's `Subscriptions` group are disposed automatically when the panel is disposed. You do not need to manually unsubscribe store selectors. The only cleanup you need in `OnDispose` is for callbacks registered outside the `Subscriptions` group (e.g., button click handlers).
+All subscriptions added to a controller's `Subscriptions` group are disposed automatically when the panel is disposed. You do not need to manually unsubscribe store selectors.
+
+For button clicks and field changes, use the `BindClick`, `BindValue`, and `BindCommand` helpers on `PanelController` — they register the callback *and* add an auto-unhook disposable to `Subscriptions`, so no manual cleanup in `OnDispose` is required. Wire interactions to store actions (methods like `Increment()`) rather than inline lambdas. See [Interaction.md](Interaction.md) for the full interaction system including `MosaicUI.Commands` for named command dispatch.
 
 ---
 
@@ -201,6 +203,8 @@ When `store.Credits` changes, `propertyChanged` fires with the property name `"C
 ---
 
 ## Using Stores Outside Controllers
+
+The `MosaicUI` static facade exposes three global members: `MosaicUI.Services` (service/store registry), `MosaicUI.Events` (broadcast event bus), and `MosaicUI.Commands` (directed command dispatch). Stores are accessed through `Services`.
 
 Stores are plain C# objects. Any code that has access to `MosaicUI.Services` can read or write to them:
 
