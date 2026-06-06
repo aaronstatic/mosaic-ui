@@ -14,5 +14,8 @@
     "state-management",
     "panels",
     "modes"
-  ]
+  ],
+  "dependencies": {
+    "com.unity.inputsystem": "1.19.0"
+  }
 }
