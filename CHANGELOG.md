@@ -4,6 +4,33 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.2.0] - 2026-06-06
+
+### Added
+
+- **Developer Tooling — in-editor MosaicUI Debugger** (new `Editor/Debugger/` module, `Mosaic.UI.Editor`; editor-only, **zero player-build cost**)
+  - `MosaicDebuggerWindow` — an `EditorWindow` at **`Window > MosaicUI > Debugger`**: a single tabbed UI Toolkit window with four live panes that attaches when play mode initializes `MosaicUI` and detaches on exit, showing a clear "MosaicUI not initialized" empty state otherwise
+  - **State** pane — lists every entry in `MosaicUI.Services`; for stores, reflects `[CreateProperty]` values and live-updates via `INotifyBindablePropertyChanged.propertyChanged` (no manual refresh), and re-scans for services registered after attach
+  - **Events** pane — a ring-buffered (cap 500), newest-first, frame- and timestamped log of every `MosaicUI.Events` publish, with a type filter and Clear; in-memory only (reset on play-mode exit)
+  - **Commands** pane — lists `MosaicUI.Commands.RegisteredIds` (sorted), polled
+  - **Composition** pane — for the active `MosaicUIManager`: current mode, the `ModeHistory` back-stack, active panels → slots (+ sort order), world features/controllers, and (best-effort) open windows from a `WindowManager` discovered in `MosaicUI.Services`
+  - `DebuggerPane` base contract (`Attach` / `Detach` / `Refresh`, build-once `Root`) shared by the four panes
+
+- **Editor introspection seams** (read-only `internal` API, exposed to `Mosaic.UI.Editor` via `InternalsVisibleTo`; consumed by the debugger, no public surface added)
+  - `ServiceRegistry.Entries` — live read-only `IReadOnlyDictionary<Type, object>` view of registrations
+  - `ModeHistory.Items` — read-only `IReadOnlyCollection<ModeDefinition>` (top-to-bottom = back-stack order)
+  - `MosaicUIManager.ActivePanels` / `Slots` / `ActiveWorldFeatures` / `ActiveWorldControllers` — read-only views of the live diff state
+  - `WindowManager.OpenWindows` — `IEnumerable<OpenWindowInfo>` projecting each open window to a `key + WindowDefinition + PanelInstance` readonly struct (private `WindowState`/`WindowChrome`/persistence stay hidden)
+  - `EventBus.SubscriberCount(Type)` — current handler count for a type (`#if UNITY_EDITOR`)
+  - `Runtime/AssemblyInfo.cs` now also grants `InternalsVisibleTo("Mosaic.UI.Editor")`
+
+- **Tests**
+  - `IntrospectionSeamTests` (Edit Mode) — covers each new seam plus the `EventBus.Published` hook (fires exactly once, after dispatch, even with zero subscribers; detaches cleanly)
+
+### Changed
+
+- `EventBus.Publish<T>` restructured so an editor observer can monitor **every** publish: it previously early-returned when a type had no subscribers; it now guards the dispatch loop instead. **Real-subscriber dispatch semantics are unchanged** (still snapshot-on-publish; still no delivery when there are no subscribers). Adds an editor-only `Published` event (`internal event Action<Type, object>`, `#if UNITY_EDITOR`) fired **once, after** dispatch — compiled out entirely in player builds, and ordered so it can never affect subscriber delivery.
+
 ## [0.1.1] - 2026-06-06
 
 ### Added

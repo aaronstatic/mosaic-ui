@@ -31,6 +31,14 @@ namespace Mosaic.UI
         private readonly Dictionary<GameObject, GameObject> _activeWorldFeatures = new();
         private readonly Dictionary<GameObject, GameObject> _activeWorldControllers = new();
 
+        // Read-only introspection views for the editor debugger (composition pane).
+        // CurrentMode and History are already public. These views reflect live diff state; mutating
+        // through them is impossible (read-only interface).
+        internal IReadOnlyDictionary<PanelDefinition, PanelInstance> ActivePanels => _activePanels;
+        internal IReadOnlyDictionary<string, SlotContainer> Slots => _slots;
+        internal IReadOnlyDictionary<GameObject, GameObject> ActiveWorldFeatures => _activeWorldFeatures;
+        internal IReadOnlyDictionary<GameObject, GameObject> ActiveWorldControllers => _activeWorldControllers;
+
         private IEnumerator Start()
         {
             MosaicUI.Initialize();

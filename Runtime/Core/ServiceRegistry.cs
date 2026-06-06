@@ -7,6 +7,10 @@ namespace Mosaic.UI
     {
         private readonly Dictionary<Type, object> _services = new();
 
+        // Read-only introspection view for the editor debugger (Mosaic.UI.Editor).
+        // No defensive copy: callers must treat this as read-only and never mutate the registry through it.
+        internal IReadOnlyDictionary<Type, object> Entries => _services;
+
         public void Register<T>(T service) where T : class
         {
             if (service == null)

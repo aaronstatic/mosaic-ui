@@ -19,6 +19,32 @@ namespace Mosaic.UI.Windows
             _persistence = persistence;
         }
 
+        // Read-only introspection view for the editor debugger (composition pane).
+        // Projects each open window to a public-safe tuple (key + definition + panel instance);
+        // the private WindowState, WindowChrome, and persistence internals are intentionally not exposed.
+        internal IEnumerable<OpenWindowInfo> OpenWindows
+        {
+            get
+            {
+                foreach (var kvp in _openWindows)
+                    yield return new OpenWindowInfo(kvp.Key, kvp.Value.Definition, kvp.Value.PanelInstance);
+            }
+        }
+
+        internal readonly struct OpenWindowInfo
+        {
+            public readonly string Key;
+            public readonly WindowDefinition Definition;
+            public readonly PanelInstance Instance;
+
+            public OpenWindowInfo(string key, WindowDefinition definition, PanelInstance instance)
+            {
+                Key = key;
+                Definition = definition;
+                Instance = instance;
+            }
+        }
+
         /// <summary>
         /// Opens a window for the given definition. If the window is already open, returns the existing instance.
         /// </summary>

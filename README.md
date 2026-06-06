@@ -14,6 +14,8 @@ State is handled through stores inspired by Zustand. Each store is a plain C# cl
 
 The framework also includes managed interaction helpers on `PanelController` and a named command dispatch registry (`CommandRegistry`) for routing clicks and field edits back into state, an optional floating window system, a `DataList` component wrapping `ListView` for data-bound lists, a lightweight service locator (`ServiceRegistry`), and a typed publish/subscribe event bus (`EventBus`). All of these components are optional — you can use the panel and mode system without windows, or use stores standalone without the rest of the framework.
 
+For development, an in-editor **MosaicUI Debugger** (`Window > MosaicUI > Debugger`) makes the otherwise-invisible runtime observable live during play mode: registered stores and their values, fired events, registered commands, and the active composition. It is editor-only and adds zero cost to player builds.
+
 ### Key benefits
 
 - Reduces per-panel boilerplate from three files (MonoBehaviour, UXML, USS) down to one or two (controller + UXML)
@@ -364,6 +366,19 @@ group.Add(MosaicUI.Events.Subscribe<BattleEndedEvent>(OnBattleEnded));
 group.Dispose();
 ```
 
+### Debugger (Editor)
+
+The **MosaicUI Debugger** is an editor-only window (`Window > MosaicUI > Debugger`) that surfaces the framework's runtime state during play mode. It attaches automatically when `MosaicUI` initializes and shows a "MosaicUI not initialized" message otherwise. Four tabs:
+
+- **State** — every entry registered in `MosaicUI.Services`; stores additionally show their `[CreateProperty]` values, updating live as `propertyChanged` fires
+- **Events** — a running, frame- and timestamped log of everything published through `MosaicUI.Events` (capped ring buffer, type filter, Clear)
+- **Commands** — the ids currently registered in `MosaicUI.Commands`
+- **Composition** — the active `MosaicUIManager`: current mode, the `ModeHistory` back-stack, active panels and their slots, world features/controllers, and open windows
+
+The debugger reads runtime state through read-only `internal` introspection members exposed to the editor assembly via `[assembly: InternalsVisibleTo("Mosaic.UI.Editor")]`, plus an `#if UNITY_EDITOR`-gated `EventBus.Published` hook — so it carries **zero cost in player builds**.
+
+> The Composition tab's **windows** list is best-effort: `MosaicUIManager` does not own a `WindowManager` (you construct it yourself). To see open windows there, register your manager as a service — `MosaicUI.Services.Register(windows)` — and the debugger will discover it.
+
 ---
 
 ## Architecture
@@ -512,7 +527,7 @@ MosaicUIManager.SetMode(newMode)
 com.aaronstatic.mosaic-ui/
 ├── Runtime/
 │   ├── MosaicUI.cs                  # Static entry point
-│   ├── AssemblyInfo.cs              # InternalsVisibleTo Mosaic.UI.Tests
+│   ├── AssemblyInfo.cs              # InternalsVisibleTo Mosaic.UI.Tests + Mosaic.UI.Editor
 │   ├── Core/
 │   │   ├── ServiceRegistry.cs
 │   │   └── EventBus.cs              # Includes SubscriptionGroup
@@ -548,9 +563,17 @@ com.aaronstatic.mosaic-ui/
 │       ├── MosaicDefaults.uss
 │       └── WindowChrome.uss
 ├── Editor/
-│   └── Inspectors/
-│       ├── PanelDefinitionEditor.cs
-│       └── ModeDefinitionEditor.cs
+│   ├── Inspectors/
+│   │   ├── PanelDefinitionEditor.cs
+│   │   └── ModeDefinitionEditor.cs
+│   └── Debugger/                    # In-editor MosaicUI Debugger (Window > MosaicUI > Debugger)
+│       ├── MosaicDebuggerWindow.cs  # EditorWindow + tab strip + play-mode attach/detach
+│       └── Panes/
+│           ├── DebuggerPane.cs      # Attach/Detach/Refresh base contract
+│           ├── StateInspectorPane.cs
+│           ├── EventMonitorPane.cs
+│           ├── CommandsInspectorPane.cs
+│           └── CompositionInspectorPane.cs
 ├── Tests/
 │   └── EditMode/
 │       ├── ServiceRegistryTests.cs
@@ -560,7 +583,8 @@ com.aaronstatic.mosaic-ui/
 │       ├── CommandRegistryTests.cs
 │       ├── PanelControllerBindTests.cs
 │       ├── ModeHistoryTests.cs
-│       └── WindowManagerTests.cs
+│       ├── WindowManagerTests.cs
+│       └── IntrospectionSeamTests.cs
 ├── Documentation~/
 │   ├── GettingStarted.md
 │   ├── Stores.md
