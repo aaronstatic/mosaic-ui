@@ -8,22 +8,28 @@ This document defines that path and the three opt-in layers that implement it.
 
 ## The Principle
 
-> **Every user interaction must have a non-UI invocation path identical to the real click.**
+> **Every user interaction — whether from a UI button, a form field, or a device action (keyboard, gamepad) — must have a non-UI invocation path identical to the real interaction.**
 
-The click handler is a thin shell over a store **action** (a method) or a named **command**. It never contains inline logic. This is the React/Zustand testing discipline applied to Unity: tests call the action or command directly and assert resulting state; they do not synthesize pointer events.
+The click handler (and the device action callback) are thin shells over a store **action** (a method) or a named **command**. They never contain inline logic. This is the React/Zustand testing discipline applied to Unity: tests call the action or command directly and assert resulting state; they do not synthesize pointer events or device state.
+
+**Device input is a non-UI invocation path.** A gamepad button mapped via `MapAction` and a UI button wired via `BindCommand` both call `CommandRegistry.Invoke(id)` — the same handler, identically, regardless of control scheme. The `CommandRegistry` is the single convergence point for both paths.
 
 ```
   WRITE                                    READ (already done)
   ─────                                    ──────────────────
-  user click / field edit
-        │
-        ▼
-  Bind* helper (Layer 2)  ─────────────► or ─── ► command (Layer 3)
-        │                                              │  Commands.Invoke(id)
-        ▼                                              ▼
-  store action (Layer 1)           registered handler ─── usually calls a store action
-        │                                              │
-        └──────────────────────────────────────────────┘
+  user click / field edit                  device action (keyboard, gamepad)
+        │                                          │
+        ▼                                          ▼
+  Bind* helper (Layer 2)              MapAction* helper (Layer 2)
+        │                                          │
+        ├──────────────────── or ──────────────────┤
+        ▼                                          ▼
+  store action (Layer 1)      or      command (Layer 3)
+        │                                   │  Commands.Invoke(id)
+        │                                   ▼
+        │                         registered handler ─── usually calls a store action
+        │                                   │
+        └───────────────────────────────────┘
                                           │
                                           ▼
                               Store.SetProperty(ref f, v)
@@ -32,7 +38,7 @@ The click handler is a thin shell over a store **action** (a method) or a named 
                     propertyChanged ──► Subscribe selectors / UXML bindings ──► UI updates
 ```
 
-The headless test path enters at the two boxes with no UI dependency: call a **store action** directly, or call **`MosaicUI.Commands.Invoke(id)`**, then assert via `store.Subscribe`.
+The headless test path enters at the two boxes with no UI or device dependency: call a **store action** directly, or call **`MosaicUI.Commands.Invoke(id)`**, then assert via `store.Subscribe`.
 
 ---
 
@@ -116,6 +122,25 @@ BindCommand("reset-btn", "counter/reset");
 // Command with a typed payload (factory called at click-time).
 BindCommand<int>("fire-btn", "weapon/fire", () => _selectedSlot);
 ```
+
+### `MapAction` / `MapAction<T>`
+
+The device sibling of `BindCommand`. Where `BindCommand` routes a UI button click to a `CommandRegistry` command, `MapAction` routes a device action (keyboard key, gamepad button, analogue axis) to the **same** command — both call `CommandRegistry.Invoke(id)` identically, regardless of control scheme.
+
+```csharp
+// Parameterless — device action's 'performed' phase invokes the command.
+// Identical to: BindCommand("jump-btn", "player/jump")
+MapAction("Player/Jump", "player/jump");
+
+// Typed payload — factory called with the CallbackContext at fire-time.
+MapAction<int>("Player/WeaponSlot", "weapon/select", ctx => (int)ctx.ReadValue<float>());
+```
+
+`MapAction` is available on `PanelController`, `WorldController`, and `WorldFeature`. It subscribes the action's `performed` phase (the discrete "it happened" moment — the device analogue of a click) and adds an auto-unhook `IDisposable` to `Subscriptions`, exactly as `BindCommand` adds an auto-unhook for the click handler. The command need not be registered at `MapAction`-time; an unregistered id throws `InvalidOperationException` from `CommandRegistry.Invoke` when the action fires.
+
+> **The "same front door" principle:** a keyboard press and a UI button click that both invoke `"player/jump"` are indistinguishable to the `CommandRegistry` handler and to any test that calls `MosaicUI.Commands.Invoke("player/jump")` directly. Control scheme is irrelevant at the handler boundary.
+
+See [InputBinding.md](InputBinding.md) for the full device-input integration guide (`BindAction*`, `ReadAction`, `MapAction`, the UI routing gate, and per-mode action maps).
 
 ### The `Commands` Accessor
 
@@ -270,3 +295,4 @@ When verifying the integration scene without pointer events, use `MosaicUI.Comma
 - [Stores.md](Stores.md) — store system, `SetProperty`, selector subscriptions, `BindClick`/`BindValue`/`BindCommand` for interaction handlers
 - [GettingStarted.md](GettingStarted.md) — end-to-end minimal counter panel walkthrough
 - [Modes.md](Modes.md) — panel lifecycle (`OnBind`/`OnShow`/`OnHide`/`OnModeChanged`/`OnDispose`) and mode transitions
+- [InputBinding.md](InputBinding.md) — device-input integration: `BindAction*`, `ReadAction`, `MapAction`, the UI routing gate, and per-mode action maps

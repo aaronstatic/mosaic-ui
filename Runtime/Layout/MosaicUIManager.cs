@@ -1,6 +1,7 @@
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.InputSystem;
 using UnityEngine.UIElements;
 
 namespace Mosaic.UI
@@ -21,8 +22,24 @@ namespace Mosaic.UI
         [SerializeField] private Transform worldSpaceRoot;
         [SerializeField] private Transform controllerRoot;
 
+        [Header("Input")]
+        // The InputActionAsset whose maps the per-mode action-map diff (DiffActionMaps) enables and
+        // disables. Wired into MosaicUI.Input via SetAsset(...) in Start() — null-guarded, so leaving
+        // this unset never throws: the input source simply has no asset and the per-mode maps are inert
+        // (DiffActionMaps is skipped when no asset is assigned — see DiffActionMaps).
+        [SerializeField] private InputActionAsset inputActions;
+
         public ModeDefinition CurrentMode { get; private set; }
         public ModeHistory History { get; } = new();
+
+        /// <summary>
+        /// The authoritative UI-vs-world routing gate, owned by this manager (which owns the only
+        /// <see cref="UIDocument"/>). World input helpers should reach it via
+        /// <c>MosaicUI.Services.Get&lt;UIRoutingGate&gt;()</c> (the same path controllers use for every
+        /// other collaborator — see <see cref="Start"/>); this property is the direct-access fallback.
+        /// The gate reads the live runtime panel from <see cref="uiDocument"/> on each query.
+        /// </summary>
+        public UIRoutingGate RoutingGate { get; private set; }
 
         private LayoutDefinition _currentLayout;
         private VisualElement _layoutRoot;
@@ -31,6 +48,11 @@ namespace Mosaic.UI
         private readonly Dictionary<GameObject, GameObject> _activeWorldFeatures = new();
         private readonly Dictionary<GameObject, GameObject> _activeWorldControllers = new();
 
+        // The action-map names currently enabled by the per-mode diff (DiffActionMaps). The diff is
+        // the sole driver of map enablement on this manager, so this set equals MosaicUI.Input.EnabledMaps
+        // after any transition (when an asset is assigned). Mirrors the _active* diff-tracking collections.
+        private readonly HashSet<string> _activeActionMaps = new();
+
         // Read-only introspection views for the editor debugger (composition pane).
         // CurrentMode and History are already public. These views reflect live diff state; mutating
         // through them is impossible (read-only interface).
@@ -38,10 +60,28 @@ namespace Mosaic.UI
         internal IReadOnlyDictionary<string, SlotContainer> Slots => _slots;
         internal IReadOnlyDictionary<GameObject, GameObject> ActiveWorldFeatures => _activeWorldFeatures;
         internal IReadOnlyDictionary<GameObject, GameObject> ActiveWorldControllers => _activeWorldControllers;
+        internal IReadOnlyCollection<string> ActiveActionMaps => _activeActionMaps;
 
         private IEnumerator Start()
         {
             MosaicUI.Initialize();
+
+            // Own the UI-vs-world routing gate. The Func defers panel resolution to query time,
+            // so constructing here (before the visual tree is fully built) is safe — the panel is
+            // read live on each IsPointerOverUI/IsKeyboardCaptured call. Register the instance in
+            // MosaicUI.Services so world controllers reach it via Services.Get<UIRoutingGate>(),
+            // consistent with how controllers reach every other collaborator (Decision 3). This
+            // runs before the first SetMode (below), which is where world controllers are first
+            // instantiated, so the gate is always registered before any world controller queries it.
+            RoutingGate = new UIRoutingGate(() => uiDocument != null ? uiDocument.rootVisualElement?.panel : null);
+            MosaicUI.Services.Register(RoutingGate);
+
+            // Wire the per-mode input asset into the input source. Null-guarded (R7): an unset field
+            // never throws — the input source simply has no asset and the per-mode action-map diff is
+            // inert (DiffActionMaps skips when no asset was assigned). Done before the first SetMode so
+            // the starting mode's maps can be enabled by the diff below.
+            if (inputActions != null)
+                MosaicUI.Input.SetAsset(inputActions);
 
             // Wait one frame for UIDocument to fully initialize its visual tree
             yield return null;
@@ -99,6 +139,9 @@ namespace Mosaic.UI
             // Diff world controllers
             DiffWorldControllers(mode);
 
+            // Diff per-mode action maps (enable maps entering, disable maps leaving)
+            DiffActionMaps(mode);
+
             CurrentMode = mode;
 
             // Notify all active panels of mode change
@@ -127,6 +170,7 @@ namespace Mosaic.UI
             DiffPanels(previousMode);
             DiffWorldFeatures(previousMode);
             DiffWorldControllers(previousMode);
+            DiffActionMaps(previousMode);
             CurrentMode = previousMode;
 
             foreach (var kvp in _activePanels)
@@ -153,9 +197,18 @@ namespace Mosaic.UI
             root.Clear();
             _slots.Clear();
 
+            // The layout SHELL must not catch pointer picks: only slotted panels/windows are
+            // interactive UI. Without this, the full-screen UIDocument root + the cloned
+            // TemplateContainer wrapper are pickable, so UIRoutingGate.IsPointerOverUI() would
+            // report the whole screen as "over UI" and suppress all world input. Marking the shell
+            // picking-ignore lets clicks over empty (non-panel) areas pass through to the world.
+            // (Slot content keeps its own default PickingMode.Position, so buttons etc. still work.)
+            root.pickingMode = PickingMode.Ignore;
+
             // Clone layout UXML
             _layoutRoot = layout.LayoutUxml.CloneTree();
             _layoutRoot.style.flexGrow = 1;
+            _layoutRoot.pickingMode = PickingMode.Ignore;   // the CloneTree() TemplateContainer wrapper
             root.Add(_layoutRoot);
 
             // Find all slot containers (elements with class "mosaic-slot")
@@ -395,6 +448,79 @@ namespace Mosaic.UI
                 }
             }
             _activeWorldControllers.Clear();
+        }
+
+        // --- Action Maps ---
+
+        /// <summary>
+        /// Per-mode action-map diff step for <see cref="SetMode(ModeDefinition)"/>/<see cref="Back"/>.
+        /// <para>
+        /// <b>No-asset behavior (documented):</b> if no <c>inputActions</c> asset was wired on this
+        /// manager, the diff is skipped entirely — a mode that declares maps is simply inert (no
+        /// exception). This mirrors the null-guard on <c>SetAsset</c> in <see cref="Start"/>: an unset
+        /// asset means the input source has nothing to enable, and calling <c>EnableMap</c> with no
+        /// asset would throw. Skipping is the least-surprising option (no crash from leaving the field
+        /// unset). When an asset <em>is</em> assigned, the actual diff runs in the static
+        /// <see cref="DiffActionMaps(IReadOnlyList{string}, HashSet{string}, InputService)"/> overload.
+        /// </para>
+        /// </summary>
+        private void DiffActionMaps(ModeDefinition mode)
+        {
+            // Skip when no asset is wired — see the no-asset behavior note above.
+            if (inputActions == null)
+                return;
+
+            DiffActionMaps(mode.ActionMaps, _activeActionMaps, MosaicUI.Input);
+        }
+
+        /// <summary>
+        /// Pure, testable core of the per-mode action-map diff: enables maps entering the new set and
+        /// disables maps leaving it, then reconciles <paramref name="active"/> to the new set.
+        /// Mirrors the set-arithmetic shape of <see cref="DiffPanels"/>/<see cref="DiffWorldControllers"/>
+        /// (non-transactional like its siblings — a mid-diff exception could leave maps half-toggled;
+        /// kept consistent with the existing diff style rather than introducing rollback for maps only).
+        /// <para>
+        /// Extracted as <c>internal static</c> so EditMode tests can drive it directly without standing
+        /// up the <see cref="MosaicUIManager"/> MonoBehaviour / its <see cref="UIDocument"/>.
+        /// </para>
+        /// </summary>
+        /// <param name="newMaps">The map names the new mode declares (null entries / empty strings are skipped; a null list is treated as empty).</param>
+        /// <param name="active">The currently-active map set; mutated in place to equal the new set after the diff.</param>
+        /// <param name="input">The input source whose <c>EnableMap</c>/<c>DisableMap</c> are driven.</param>
+        internal static void DiffActionMaps(IReadOnlyList<string> newMaps, HashSet<string> active, InputService input)
+        {
+            // Build the new set, skipping null/empty names.
+            var newSet = new HashSet<string>();
+            if (newMaps != null)
+            {
+                foreach (var m in newMaps)
+                {
+                    if (!string.IsNullOrEmpty(m))
+                        newSet.Add(m);
+                }
+            }
+
+            // Snapshot the maps leaving the active set BEFORE disabling, so we don't mutate `active`
+            // while iterating it (and so reconciling `active` below is unaffected by the disable loop).
+            var toDisable = new List<string>();
+            foreach (var m in active)
+            {
+                if (!newSet.Contains(m))
+                    toDisable.Add(m);
+            }
+            foreach (var m in toDisable)
+                input.DisableMap(m);
+
+            // Enable maps entering the active set.
+            foreach (var m in newSet)
+            {
+                if (!active.Contains(m))
+                    input.EnableMap(m);
+            }
+
+            // Reconcile the tracked set to the new set.
+            active.Clear();
+            active.UnionWith(newSet);
         }
     }
 }

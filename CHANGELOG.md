@@ -4,6 +4,32 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.3.0] - 2026-06-06
+
+### Added
+
+- **Input source service** (`MosaicUI.Input`) — new `Runtime/Input/` module, `Mosaic.UI` namespace; introduces the framework's first hard dependency on `com.unity.inputsystem`
+  - `InputService` — wraps a consumer-supplied `InputActionAsset` assigned via `SetAsset` (hot-swappable). `SubscribeStarted`/`SubscribePerformed`/`SubscribeCanceled(name, handler)` return `IDisposable` phase subscriptions; `ReadValue<T>(name)` reads the current value; `EnableMap(name)`/`DisableMap(name)` toggle named maps; `ActiveControlScheme` tracks the active scheme. Unresolved action/map names and use-before-`SetAsset` throw `InvalidOperationException` in the house style; `Dispose()` reverses all enabled InputSystem state (no `Device.current` polling anywhere)
+  - `ControlSchemeChanged` — public struct (`Previous` / `Current`) published on `MosaicUI.Events` when the active control scheme switches (driven by `InputUser.onChange`)
+- **Static Facade**
+  - `MosaicUI.Input` — global `InputService`, constructed by `Initialize()` and disposed/nulled by `Shutdown()` alongside `Services` / `Events` / `Commands`
+- **Input binding layer** (extends the write loop to device input) — `Runtime/Input/InputBindingExtensions.cs` + `Runtime/Input/UIRoutingGate.cs`
+  - `BindActionStarted` / `BindActionPerformed` / `BindActionCanceled(actionName, handler)` and `ReadAction<TValue>(actionName)` on `PanelController`, `WorldController`, and `WorldFeature` — mirror `BindClick`; subscriptions auto-add to the controller's `Subscriptions` group
+  - `MapAction(actionName, commandId)` / `MapAction<T>(actionName, commandId, payload)` on the same three bases — the device sibling of `BindCommand`: a device action's `performed` phase invokes `MosaicUI.Commands`, so a gamepad/keyboard action and a UI button reach the **same** command identically across control schemes
+  - `UIRoutingGate` — authoritative UI-vs-world routing gate over the UI Toolkit runtime panel (`RuntimePanelUtils.ScreenToPanel` + `IPanel.Pick` + `focusController`; no `EventSystem`): `IsPointerOverUI(screenPos)`, `IsKeyboardCaptured()`, `ShouldHandleWorldPointer(screenPos, takeRawInput = false)`. Registered in `MosaicUI.Services` and exposed as `MosaicUIManager.RoutingGate`
+  - **Per-mode action maps** — `ModeDefinition.ActionMaps` (a `List<string>`) declares the maps active for a mode; `MosaicUIManager` auto-wires a serialized `InputActionAsset` (`SetAsset` on `Start()`) and diffs maps in lock-step with panels/world objects (`DiffActionMaps` in `SetMode()` / `Back()`); `internal ActiveActionMaps` introspection
+- **World bases gain `Subscriptions`** — `WorldController` and `WorldFeature` now carry a `public SubscriptionGroup Subscriptions` (disposed first in `Dispose()`), so device subscriptions on world objects auto-clean on mode exit
+- **Tests** — `InputServiceTests`, `InputBindingBridgeTests` (BindAction firing/dispose + the action→command bridge), `UIRoutingGateTests`, `ModeActionMapDiffTests` (Edit Mode)
+- **Documentation** — `Documentation~/Input.md` (the source service) and `Documentation~/InputBinding.md` (the binding layer: `BindAction`/`MapAction`, the routing gate + its picking-mode requirement, per-mode maps)
+
+### Changed
+
+- `MosaicUI.Initialize()` now also constructs `MosaicUI.Input`; `MosaicUI.Shutdown()` disposes and nulls it. (No change to the existing `Services` / `Events` / `Commands` lifecycle.)
+- `MosaicUIManager.ApplyLayout` now marks the layout **shell** (the `UIDocument` root and the cloned `TemplateContainer` wrapper) `PickingMode.Ignore`, so `UIRoutingGate` reports only actual slotted panels/windows as "over UI" and world clicks over empty UI areas pass through. Slotted content keeps `PickingMode.Position`, so buttons/fields are unaffected.
+- `MosaicUIManager` gains a serialized `InputActionAsset` field (`Input` header) wired into `MosaicUI.Input.SetAsset` on `Start()`.
+- `Documentation~/Interaction.md` — the "non-UI invocation path" doctrine now explicitly includes device input routed through the input layer; documents `MapAction` as `BindCommand`'s device sibling.
+- **Dependency:** `Runtime/Mosaic.UI.asmdef` now references `Unity.InputSystem`, and `package.json` declares `com.unity.inputsystem` (1.19.0) — **MosaicUI now requires the Unity Input System package** (resolved automatically by UPM). The test assembly also references `Unity.InputSystem.TestFramework`.
+
 ## [0.2.0] - 2026-06-06
 
 ### Added

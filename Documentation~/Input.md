@@ -2,7 +2,7 @@
 
 MosaicUI's input source service: `InputService`, exposed via the static facade as `MosaicUI.Input`. It wraps a consumer-supplied `InputActionAsset`, resolves named actions and maps, exposes service-level subscriptions to action phases, reads current action values, manages map enable/disable, and broadcasts a `ControlSchemeChanged` struct on `MosaicUI.Events` when the active control scheme switches.
 
-> **Scope notice.** This document covers the *source service only*. Controller-level `BindAction` helpers, the action-to-command bridge, the UI-vs-world routing gate, and per-mode action-map activation are all part of the sibling feature **`composition/input-binding`** and are not documented here.
+> **Scope notice.** This document covers the *source service only*. Controller-level `BindAction` helpers, the action-to-command bridge, the UI-vs-world routing gate, and per-mode action-map activation are all provided by the sibling feature **`composition/input-binding`** and documented in [InputBinding.md](InputBinding.md).
 
 > **Dependency notice.** Since this service is a first-class `MosaicUI` facade citizen, the `Mosaic.UI` runtime assembly now has a hard dependency on `com.unity.inputsystem` (1.19.0 or later). Every project that uses MosaicUI must have the Input System package installed.
 
@@ -111,7 +111,7 @@ Re-enabling an already-enabled map and disabling a not-enabled map are both harm
 
 The service tracks which maps it has enabled so that `Dispose()` (see [Teardown](#teardown)) can disable them all, leaving no enabled InputSystem state behind.
 
-> Per-mode map activation — enabling `Player` on mode enter and disabling it on mode exit — is handled by **`composition/input-binding`**, not here. This feature exposes the lever; that feature drives it via `MosaicUIManager.SetMode()`.
+> Per-mode map activation — enabling `Player` on mode enter and disabling it on mode exit — is provided by **`composition/input-binding`** via `MosaicUIManager.SetMode()` (see [InputBinding.md § Per-mode action maps](InputBinding.md)). This service exposes the `EnableMap`/`DisableMap` lever; the manager drives it.
 
 ---
 
@@ -158,12 +158,12 @@ After `Dispose()`, driving any previously-subscribed action invokes nothing and 
 
 ## Integration with `composition/input-binding`
 
-The following features are explicitly **not** part of this service. They are implemented in the sibling feature **`composition/input-binding`**:
+The following capabilities are **provided by `composition/input-binding`** (see [InputBinding.md](InputBinding.md)):
 
-- `BindAction` helpers on `PanelController` / `WorldController` / `WorldFeature` (auto-disposed via `Subscriptions`).
-- The action-to-command bridge (`MapAction("Player/Jump") → MosaicUI.Commands.Invoke("jump")`).
-- The UI-vs-world routing gate (respecting pointer/focus capture by panels and windows).
-- Per-mode action-map activation (`ModeDefinition` declaring which maps to enable; `MosaicUIManager.SetMode()` calling `EnableMap`/`DisableMap` on this service as part of the mode diff).
-- `MosaicUIManager` auto-wiring of the asset from a serialized field.
+- **`BindAction*` / `ReadAction` helpers** on `PanelController` / `WorldController` / `WorldFeature` — subscribe to a named action's phases and read its value, auto-disposed via `Subscriptions`.
+- **`MapAction` / `MapAction<T>` bridge** — a device action's `performed` phase dispatches a `CommandRegistry` command, identically to `BindCommand`.
+- **`UIRoutingGate`** — the authoritative "is the pointer/keyboard focus over a MosaicUI panel or window?" query, so world input can stand down when the UI owns the pointer.
+- **Per-mode action-map activation** — `ModeDefinition` declares which maps to enable; `MosaicUIManager.SetMode()` calls `EnableMap`/`DisableMap` on this service as part of the mode diff.
+- **`MosaicUIManager.inputActions`** — a serialized field that auto-wires the asset via `SetAsset` in `Start()`.
 
-`composition/input-binding` calls the same public surface documented above — `SetAsset`, `SubscribeStarted`/`Performed`/`Canceled`, `ReadValue`, `EnableMap`/`DisableMap`, and subscribes to `ControlSchemeChanged` on `MosaicUI.Events`. No further changes to `InputService` are required by that feature.
+`composition/input-binding` consumes this service's public surface (`SetAsset`, `SubscribeStarted`/`Performed`/`Canceled`, `ReadValue`, `EnableMap`/`DisableMap`) unchanged. No further changes to `InputService` are required.

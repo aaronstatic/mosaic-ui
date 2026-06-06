@@ -12,7 +12,9 @@ MosaicUI is a UI framework for Unity that treats the game's screen layout as a c
 
 State is handled through stores inspired by Zustand. Each store is a plain C# class that extends `Store<TSelf>`, uses `SetProperty` to mutate properties, and notifies subscribers only when the selected slice of state actually changes. Stores integrate directly with UI Toolkit's data binding system via `INotifyBindablePropertyChanged`, so both manual subscriptions and UXML data bindings work from the same source.
 
-The framework also includes managed interaction helpers on `PanelController` and a named command dispatch registry (`CommandRegistry`) for routing clicks and field edits back into state, an optional floating window system, a `DataList` component wrapping `ListView` for data-bound lists, a lightweight service locator (`ServiceRegistry`), and a typed publish/subscribe event bus (`EventBus`). All of these components are optional — you can use the panel and mode system without windows, or use stores standalone without the rest of the framework.
+The framework also includes managed interaction helpers on `PanelController` and a named command dispatch registry (`CommandRegistry`) for routing clicks and field edits back into state, a device-input layer (`MosaicUI.Input`) that wraps an Input System `InputActionAsset` and wires named actions into the same command/store path as a UI click, an optional floating window system, a `DataList` component wrapping `ListView` for data-bound lists, a lightweight service locator (`ServiceRegistry`), and a typed publish/subscribe event bus (`EventBus`). All of these components are optional — you can use the panel and mode system without windows, or use stores standalone without the rest of the framework.
+
+> **Requires the Unity Input System package** (`com.unity.inputsystem`) — the `MosaicUI.Input` source service depends on it, so it is declared as a package dependency and resolved automatically by UPM.
 
 For development, an in-editor **MosaicUI Debugger** (`Window > MosaicUI > Debugger`) makes the otherwise-invisible runtime observable live during play mode: registered stores and their values, fired events, registered commands, and the active composition. It is editor-only and adds zero cost to player builds.
 
@@ -300,7 +302,37 @@ public class StarMapCameraController : WorldController
 }
 ```
 
-Both are configured as prefab references in ModeDefinition entries and are instantiated/destroyed using the same diffing logic as panels.
+Both are configured as prefab references in ModeDefinition entries and are instantiated/destroyed using the same diffing logic as panels. Like `PanelController`, both world bases carry a `Subscriptions` group and the `BindAction*`/`ReadAction`/`MapAction` input helpers (below), so device-driven world controllers auto-clean their subscriptions on mode exit.
+
+### Input
+
+`MosaicUI.Input` is the device-input **source**: an `InputService` that wraps a consumer-supplied `InputActionAsset`, resolves named actions/maps, exposes phase subscriptions and `ReadValue`, enables/disables maps, and tracks the active control scheme (broadcasting `ControlSchemeChanged` on `MosaicUI.Events`). On top of it, controllers get the same auto-disposed ergonomics as `BindClick`:
+
+```csharp
+public class MapCameraController : WorldController
+{
+    public override void OnActivated()
+    {
+        // device action → named command (the SAME CommandRegistry path a UI button hits)
+        MapAction("Camera/Pick", "map/pick");
+        // react to a phase directly (auto-unhooked via Subscriptions)
+        BindActionPerformed("Camera/Recenter", _ => GetStore<MapCameraStore>().Recenter());
+    }
+
+    private void Update()
+    {
+        var orbit = ReadAction<Vector2>("Camera/Orbit");   // continuous read
+        // ...
+    }
+}
+```
+
+- **`BindActionStarted/Performed/Canceled(actionName, handler)`** and **`ReadAction<T>(actionName)`** — on `PanelController`, `WorldController`, and `WorldFeature`; subscriptions auto-dispose via `Subscriptions`.
+- **`MapAction(actionName, commandId)` / `MapAction<T>(...)`** — the device sibling of `BindCommand`: a gamepad/keyboard action and a UI button reach the **same** `MosaicUI.Commands` command identically across control schemes.
+- **`UIRoutingGate`** — an authoritative, queryable gate ("is the pointer / keyboard focus over a MosaicUI panel or window?") built on the UI Toolkit runtime panel (no `EventSystem`). Registered in `MosaicUI.Services` by `MosaicUIManager`; world input calls `gate.ShouldHandleWorldPointer(screenPos)` to stand down when the UI owns the pointer.
+- **Per-mode action maps** — a `ModeDefinition` lists the action map(s) active in that mode; `MosaicUIManager` auto-wires its serialized `InputActionAsset` and enables/disables maps via the same diff that swaps panels and world objects.
+
+See [Documentation~/Input.md](Documentation~/Input.md) (the source service) and [Documentation~/InputBinding.md](Documentation~/InputBinding.md) (the binding layer) for complete guides.
 
 ### Windows
 
@@ -437,9 +469,10 @@ MosaicUIManager.SetMode(newMode)
 | `MosaicUI.Services` | The global `ServiceRegistry` instance |
 | `MosaicUI.Events` | The global `EventBus` instance |
 | `MosaicUI.Commands` | The global `CommandRegistry` instance |
+| `MosaicUI.Input` | The global `InputService` (device-input source) instance |
 | `MosaicUI.IsInitialized` | Whether the framework has been initialized |
-| `MosaicUI.Initialize()` | Create Services, Events, and Commands. Idempotent. |
-| `MosaicUI.Shutdown()` | Clear and null Services, Events, and Commands. |
+| `MosaicUI.Initialize()` | Create Services, Events, Commands, and Input. Idempotent. |
+| `MosaicUI.Shutdown()` | Dispose/clear and null Services, Events, Commands, and Input. |
 
 ### ServiceRegistry
 
@@ -471,6 +504,24 @@ MosaicUIManager.SetMode(newMode)
 | `RegisteredIds` | Snapshot `IReadOnlyCollection<string>` of registered ids |
 | `Clear()` | Remove all registrations |
 
+### InputService (`MosaicUI.Input`)
+
+| Member | Description |
+|---|---|
+| `SetAsset(InputActionAsset)` | Assign (hot-swappable) the asset whose actions/maps are resolved |
+| `SubscribeStarted/Performed/Canceled(name, handler)` | Subscribe to a named action's phase; returns an `IDisposable` |
+| `ReadValue<T>(name)` | Read a named action's current value (`T : struct`) |
+| `EnableMap(name)` / `DisableMap(name)` | Enable/disable a named action map |
+| `ActiveControlScheme` | The active control scheme name (broadcasts `ControlSchemeChanged` on `MosaicUI.Events` when it changes) |
+
+### UIRoutingGate
+
+| Member | Description |
+|---|---|
+| `IsPointerOverUI(screenPos)` | Whether the pointer is over a MosaicUI panel/window (runtime-panel `Pick`) |
+| `IsKeyboardCaptured()` | Whether a UI element currently holds keyboard focus |
+| `ShouldHandleWorldPointer(screenPos, takeRawInput = false)` | `takeRawInput \|\| !IsPointerOverUI(...)` — world input's stand-down check |
+
 ### Store\<TSelf\>
 
 | Member | Description |
@@ -492,6 +543,9 @@ MosaicUIManager.SetMode(newMode)
 | `BindClick(name/button, handler)` | Wire a button's `clicked` event; auto-unhooked on dispose |
 | `BindValue<T>(name/field, getter, setter)` | Two-way bind a `BaseField<T>` to a store value |
 | `BindCommand(name, commandId)` | Wire a button click to `Commands.Invoke(commandId)` |
+| `BindActionStarted/Performed/Canceled(action, handler)` | Subscribe to a `MosaicUI.Input` action phase; auto-unhooked on dispose |
+| `ReadAction<T>(action)` | Read a named action's current value via `MosaicUI.Input` |
+| `MapAction(action, commandId)` / `MapAction<T>(...)` | Wire a device action's `performed` phase to `Commands.Invoke` (device sibling of `BindCommand`) |
 | `OnBind()` | Override: query elements, set up subscriptions |
 | `OnShow()` | Override: panel is becoming visible |
 | `OnHide()` | Override: panel is being hidden |
@@ -504,9 +558,12 @@ MosaicUIManager.SetMode(newMode)
 |---|---|
 | `CurrentMode` | The currently active `ModeDefinition` |
 | `History` | The `ModeHistory` stack |
-| `SetMode(ModeDefinition)` | Transition to a mode |
+| `RoutingGate` | The `UIRoutingGate` (also registered in `MosaicUI.Services`) |
+| `SetMode(ModeDefinition)` | Transition to a mode (diffs panels, world objects, **and the mode's declared action maps**) |
 | `SetMode(string modeName)` | Transition to a mode by name |
 | `Back()` | Restore the previous mode from history |
+
+> `MosaicUIManager` has a serialized `InputActionAsset` field (`Input` header); on `Start()` it calls `MosaicUI.Input.SetAsset(...)`, and each `ModeDefinition` lists the action maps active for that mode.
 
 ### WindowManager
 
@@ -534,6 +591,11 @@ com.aaronstatic.mosaic-ui/
 │   ├── Interaction/
 │   │   ├── CommandRegistry.cs       # Named command dispatch
 │   │   └── CallbackDisposable.cs    # Internal unhook IDisposable
+│   ├── Input/
+│   │   ├── InputService.cs          # MosaicUI.Input — InputActionAsset source service
+│   │   ├── ControlSchemeChanged.cs  # EventBus message (scheme switches)
+│   │   ├── InputBindingExtensions.cs # Shared BindAction*/MapAction* impl
+│   │   └── UIRoutingGate.cs         # UI-vs-world routing gate
 │   ├── State/
 │   │   ├── Store.cs
 │   │   └── StoreSubscription.cs
@@ -584,13 +646,19 @@ com.aaronstatic.mosaic-ui/
 │       ├── PanelControllerBindTests.cs
 │       ├── ModeHistoryTests.cs
 │       ├── WindowManagerTests.cs
-│       └── IntrospectionSeamTests.cs
+│       ├── IntrospectionSeamTests.cs
+│       ├── InputServiceTests.cs
+│       ├── InputBindingBridgeTests.cs   # BindAction + MapAction bridge
+│       ├── UIRoutingGateTests.cs
+│       └── ModeActionMapDiffTests.cs
 ├── Documentation~/
 │   ├── GettingStarted.md
 │   ├── Stores.md
 │   ├── Interaction.md
 │   ├── Modes.md
-│   └── Windows.md
+│   ├── Windows.md
+│   ├── Input.md            # MosaicUI.Input source service
+│   └── InputBinding.md     # BindAction/MapAction, UIRoutingGate, per-mode maps
 ├── CHANGELOG.md
 ├── LICENSE.md
 └── package.json
