@@ -14,7 +14,7 @@ State is handled through stores inspired by Zustand. Each store is a plain C# cl
 
 The framework also includes managed interaction helpers on `PanelController` and a named command dispatch registry (`CommandRegistry`) for routing clicks and field edits back into state, a device-input layer (`MosaicUI.Input`) that wraps an Input System `InputActionAsset` and wires named actions into the same command/store path as a UI click, an optional floating window system, a `DataList` component wrapping `ListView` for data-bound lists, a lightweight service locator (`ServiceRegistry`), and a typed publish/subscribe event bus (`EventBus`). All of these components are optional — you can use the panel and mode system without windows, or use stores standalone without the rest of the framework.
 
-> **Requires the Unity Input System package** (`com.unity.inputsystem`) — the `MosaicUI.Input` source service depends on it, so it is declared as a package dependency and resolved automatically by UPM.
+> **Requires the Unity Input System package** (`com.unity.inputsystem`) — the `MosaicUI.Input` source service depends on it, so it is declared as a package dependency and resolved automatically by UPM. It also requires **Unity Mathematics** (`com.unity.mathematics`), which `MosaicInspector` uses to format `float2`, `float3`, and `float4` store values. Both are declared in `package.json`, so UPM resolves them for you.
 
 For development, an in-editor **MosaicUI Debugger** (`Window > MosaicUI > Debugger`) makes the otherwise-invisible runtime observable live during play mode: registered stores and their values, fired events, registered commands, and the active composition. It is editor-only and adds zero cost to player builds.
 
@@ -405,11 +405,19 @@ The **MosaicUI Debugger** is an editor-only window (`Window > MosaicUI > Debugge
 - **State** — every entry registered in `MosaicUI.Services`; stores additionally show their `[CreateProperty]` values, updating live as `propertyChanged` fires
 - **Events** — a running, frame- and timestamped log of everything published through `MosaicUI.Events` (capped ring buffer, type filter, Clear)
 - **Commands** — the ids currently registered in `MosaicUI.Commands`
-- **Composition** — the active `MosaicUIManager`: current mode, the `ModeHistory` back-stack, active panels and their slots, world features/controllers, and open windows
+- **Composition** — the active `MosaicUIManager`: current mode, the `ModeHistory` back-stack, layout slots, active panels and their slots, world features/controllers, active action maps, and open windows
 
 The debugger reads runtime state through read-only `internal` introspection members exposed to the editor assembly via `[assembly: InternalsVisibleTo("Mosaic.UI.Editor")]`, plus an `#if UNITY_EDITOR`-gated `EventBus.Published` hook — so it carries **zero cost in player builds**.
 
+The **State** and **Composition** tabs read their data through the public `MosaicInspector` facade (see [Inspection](#inspection-cli--agents)). The debugger therefore exercises the same path that a CLI or an agent uses.
+
 > The Composition tab's **windows** list is best-effort: `MosaicUIManager` does not own a `WindowManager` (you construct it yourself). To see open windows there, register your manager as a service — `MosaicUI.Services.Register(windows)` — and the debugger will discover it.
+
+### Inspection (CLI / agents)
+
+`MosaicInspector` is a public, read-only view of the runtime, reachable from any assembly that references `Mosaic.UI`. Six methods report the services, the stores and their values, the live composition, the registered commands, and the recent events. Every result is a plain `[Serializable]` class that `JsonUtility` serializes with no converter, so a CLI or an agent can poll the Editor and diff the JSON.
+
+See [Documentation~/Inspection.md](Documentation~/Inspection.md) for a complete guide.
 
 ---
 
@@ -562,6 +570,7 @@ MosaicUIManager.SetMode(newMode)
 | `SetMode(ModeDefinition)` | Transition to a mode (diffs panels, world objects, **and the mode's declared action maps**) |
 | `SetMode(string modeName)` | Transition to a mode by name |
 | `Back()` | Restore the previous mode from history |
+| `Instance` (static) | The manager that awoke most recently, or null when none exists |
 
 > `MosaicUIManager` has a serialized `InputActionAsset` field (`Input` header); on `Start()` it calls `MosaicUI.Input.SetAsset(...)`, and each `ModeDefinition` lists the action maps active for that mode.
 
@@ -575,6 +584,19 @@ MosaicUIManager.SetMode(newMode)
 | `Toggle(definition)` | Open if closed, close if open |
 | `CloseAll()` | Close all open windows |
 | `IsOpen(windowName)` | Check whether a window is currently open |
+
+### MosaicInspector
+
+| Member | Description |
+|---|---|
+| `GetServices()` | Every registered service, sorted by key type name |
+| `GetStore(string typeName)` | One store by full or short type name, with its `[CreateProperty]` values |
+| `GetStores()` | Every registered store, sorted by key type name |
+| `GetComposition()` | The live mode, history, slots, panels, action maps, and world objects |
+| `GetCommands()` | Every registered command id, sorted |
+| `GetRecentEvents(int max)` | The newest recorded events (editor-only buffer, 64 entries) |
+
+> No method throws and no method mutates state. A flag on the result reports each failure: `initialized`, `hasManager`, and `found`. Call every method from the main thread.
 
 ---
 
@@ -621,6 +643,12 @@ com.aaronstatic.mosaic-ui/
 │   │   └── WindowPersistence.cs     # Interface + PlayerPrefs impl
 │   ├── Components/
 │   │   └── DataList.cs              # UxmlElement wrapping ListView
+│   ├── Inspection/
+│   │   ├── MosaicInspector.cs       # Public read-only facade (six methods)
+│   │   ├── MosaicInspector.Dtos.cs  # [Serializable] result classes
+│   │   ├── InspectionValueFormatter.cs # Value to JSON-safe text rules
+│   │   ├── StoreReflectionCache.cs  # Cached [CreateProperty] member walk
+│   │   └── EventRecorder.cs         # Editor-only 64-entry event ring buffer
 │   └── Styles/
 │       ├── MosaicDefaults.uss
 │       └── WindowChrome.uss
@@ -650,7 +678,8 @@ com.aaronstatic.mosaic-ui/
 │       ├── InputServiceTests.cs
 │       ├── InputBindingBridgeTests.cs   # BindAction + MapAction bridge
 │       ├── UIRoutingGateTests.cs
-│       └── ModeActionMapDiffTests.cs
+│       ├── ModeActionMapDiffTests.cs
+│       └── MosaicInspectorTests.cs      # Facade, formatter, cache, event buffer
 ├── Documentation~/
 │   ├── GettingStarted.md
 │   ├── Stores.md
@@ -658,7 +687,8 @@ com.aaronstatic.mosaic-ui/
 │   ├── Modes.md
 │   ├── Windows.md
 │   ├── Input.md            # MosaicUI.Input source service
-│   └── InputBinding.md     # BindAction/MapAction, UIRoutingGate, per-mode maps
+│   ├── InputBinding.md     # BindAction/MapAction, UIRoutingGate, per-mode maps
+│   └── Inspection.md       # MosaicInspector read-only facade for CLI / agents
 ├── CHANGELOG.md
 ├── LICENSE.md
 └── package.json

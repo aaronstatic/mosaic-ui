@@ -62,6 +62,29 @@ namespace Mosaic.UI
         internal IReadOnlyDictionary<GameObject, GameObject> ActiveWorldControllers => _activeWorldControllers;
         internal IReadOnlyCollection<string> ActiveActionMaps => _activeActionMaps;
 
+        /// <summary>
+        /// The manager that awoke most recently, or null when none exists. Set in <see cref="Awake"/>
+        /// and cleared in <see cref="OnDestroy"/>, so <c>MosaicInspector.GetComposition()</c> and any
+        /// other reader can find the manager without a scene-wide search.
+        ///
+        /// <para>The setter is <c>internal</c> as a test seam only: Unity never calls <c>Awake</c>
+        /// outside play mode, so EditMode tests assign the instance directly.</para>
+        /// </summary>
+        public static MosaicUIManager Instance { get; internal set; }
+
+        private void Awake()
+        {
+            if (Instance != null && Instance != this)
+            {
+                Debug.LogWarning(
+                    $"[MosaicUI] A second MosaicUIManager awoke on '{name}'. The most recent manager " +
+                    $"takes MosaicUIManager.Instance, replacing '{Instance.name}'.");
+            }
+
+            // Last manager wins.
+            Instance = this;
+        }
+
         private IEnumerator Start()
         {
             MosaicUI.Initialize();
@@ -92,6 +115,11 @@ namespace Mosaic.UI
 
         private void OnDestroy()
         {
+            // Clear the static only when it still points at this manager, so a destroyed duplicate
+            // cannot null a live registration.
+            if (Instance == this)
+                Instance = null;
+
             DisposeAllPanels();
             DisposeAllWorldFeatures();
             DisposeAllWorldControllers();

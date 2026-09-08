@@ -9,8 +9,10 @@ namespace Mosaic.UI.Editor
     /// <summary>
     /// Composition Inspector pane — shows the active MosaicUIManager state:
     ///   • Current mode + history back-stack
+    ///   • Layout slot names
     ///   • Active panels grouped by slot (SlotName + SortOrder)
     ///   • Active world features and world controllers
+    ///   • Active input action maps
     ///   • Open windows (best-effort via Services discovery)
     ///
     /// Polling mechanism:
@@ -19,10 +21,12 @@ namespace Mosaic.UI.Editor
     ///   Poll() computes a cheap signature string each tick and only rebuilds
     ///   section content when the signature changes — avoiding per-frame GC churn.
     ///
-    /// Manager discovery:
-    ///   FindFirstObjectByType&lt;MosaicUIManager&gt;() is called each Poll() (or on
-    ///   the cached reference going stale/null). Shows "No MosaicUIManager in scene."
-    ///   when no manager is found.
+    /// Data source (since 0.4.0):
+    ///   One MosaicInspector.GetComposition() call per poll supplies every section
+    ///   except Windows. The facade reads MosaicUIManager.Instance and guards each
+    ///   collection itself, so this pane needs no FindFirstObjectByType scan and no
+    ///   try/catch around the reads. hasManager == false drives the
+    ///   "No MosaicUIManager in scene." message.
     ///
     /// WindowManager discovery:
     ///   Best-effort — scans MosaicUI.Services.Entries for a value that is a
@@ -46,6 +50,9 @@ namespace Mosaic.UI.Editor
         private Label _currentModeLabel;
         private VisualElement _historyContainer;
 
+        // Slots section
+        private VisualElement _slotsContainer;
+
         // Panels section
         private VisualElement _panelsContainer;
 
@@ -53,17 +60,15 @@ namespace Mosaic.UI.Editor
         private VisualElement _worldFeaturesContainer;
         private VisualElement _worldControllersContainer;
 
+        // Input section
+        private VisualElement _actionMapsContainer;
+
         // Windows section
         private VisualElement _windowsContainer;
 
         // ── Poll state ────────────────────────────────────────────────────────
 
         private IVisualElementScheduledItem _pollSchedule;
-
-        /// <summary>
-        /// Cached manager reference. Re-resolved when null/destroyed.
-        /// </summary>
-        private MosaicUIManager _manager;
 
         /// <summary>
         /// Last computed signature; content rebuilt only when this changes.
@@ -100,7 +105,7 @@ namespace Mosaic.UI.Editor
             sep.style.marginBottom = 4;
             Root.Add(sep);
 
-            // "No manager" message — shown when FindFirstObjectByType returns null.
+            // "No manager" message — shown when the facade reports hasManager == false.
             _noManagerLabel = new Label("No MosaicUIManager in scene.");
             _noManagerLabel.style.paddingLeft = 8;
             _noManagerLabel.style.paddingTop = 8;
@@ -150,6 +155,11 @@ namespace Mosaic.UI.Editor
             _historyContainer = new VisualElement();
             modeContent.Add(_historyContainer);
 
+            // ── Slots section ─────────────────────────────────────────────────
+            var slotsContent = BuildSection("Slots", content);
+            _slotsContainer = new VisualElement();
+            slotsContent.Add(_slotsContainer);
+
             // ── Panels section ────────────────────────────────────────────────
             var panelsContent = BuildSection("Panels", content);
             _panelsContainer = new VisualElement();
@@ -176,6 +186,11 @@ namespace Mosaic.UI.Editor
 
             _worldControllersContainer = new VisualElement();
             worldContent.Add(_worldControllersContainer);
+
+            // ── Input section ─────────────────────────────────────────────────
+            var actionMapsContent = BuildSection("Action Maps", content);
+            _actionMapsContainer = new VisualElement();
+            actionMapsContent.Add(_actionMapsContainer);
 
             // ── Windows section ───────────────────────────────────────────────
             var windowsContent = BuildSection("Windows", content);
@@ -211,8 +226,7 @@ namespace Mosaic.UI.Editor
             // Pause the poll — hold the handle so Attach() can resume it cheaply.
             _pollSchedule?.Pause();
 
-            // Drop cached references.
-            _manager = null;
+            // Drop cached state so the next Attach rebuilds from scratch.
             _lastSignature = null;
 
             // Return UI to no-manager state.
@@ -230,23 +244,19 @@ namespace Mosaic.UI.Editor
 
         private void Poll()
         {
-            // Guard: framework must be running.
-            if (!MosaicUI.IsInitialized || MosaicUI.Services == null)
+            // One facade call per poll. It never throws: a framework that is down reports
+            // initialized == false, and a missing or destroyed manager reports hasManager == false.
+            var composition = MosaicInspector.GetComposition();
+
+            if (!composition.initialized)
             {
                 SetSectionsVisible(false);
                 _noManagerLabel.style.display = DisplayStyle.None;
-                _manager = null;
                 _lastSignature = null;
                 return;
             }
 
-            // Re-resolve manager if the cached reference went stale.
-            if (_manager == null || !_manager)
-            {
-                _manager = UnityEngine.Object.FindFirstObjectByType<MosaicUIManager>();
-            }
-
-            if (_manager == null)
+            if (!composition.hasManager)
             {
                 // No manager in scene.
                 _noManagerLabel.style.display = DisplayStyle.Flex;
@@ -259,86 +269,88 @@ namespace Mosaic.UI.Editor
             SetSectionsVisible(true);
 
             // Compute a cheap signature covering all visible state.
-            var sig = ComputeSignature(_manager);
+            var sig = ComputeSignature(composition);
             if (string.Equals(sig, _lastSignature, StringComparison.Ordinal))
                 return; // Nothing changed — skip rebuild.
 
             _lastSignature = sig;
-            RebuildContent(_manager);
+            RebuildContent(composition);
         }
 
         // ── Signature ─────────────────────────────────────────────────────────
 
-        private string ComputeSignature(MosaicUIManager manager)
+        private static string ComputeSignature(MosaicInspector.CompositionResult composition)
         {
             // Use a per-call StringBuilder (small, bounded by scene complexity).
             var sb = new StringBuilder(256);
 
             // Current mode
-            sb.Append(manager.CurrentMode?.ModeName ?? "(none)");
+            sb.Append(string.IsNullOrEmpty(composition.currentMode) ? "(none)" : composition.currentMode);
             sb.Append('|');
 
             // History count (sufficient — changing the stack changes count or top item)
-            sb.Append(manager.History.Count);
+            sb.Append(composition.history.Count);
             sb.Append('|');
 
             // History items (top-to-bottom = most-recent first)
-            try
+            foreach (var item in composition.history)
             {
-                foreach (var item in manager.History.Items)
-                {
-                    sb.Append(item?.ModeName ?? "?");
-                    sb.Append(',');
-                }
+                sb.Append(string.IsNullOrEmpty(item) ? "?" : item);
+                sb.Append(',');
             }
-            catch { /* play-exit race — leave partial */ }
 
             sb.Append('|');
 
-            // Active panels: PanelName:SlotName:SortOrder (order by definition reference is stable)
-            try
+            // Layout slots
+            foreach (var slot in composition.slots)
             {
-                foreach (var kvp in manager.ActivePanels)
-                {
-                    sb.Append(kvp.Key?.PanelName ?? "?");
-                    sb.Append(':');
-                    sb.Append(kvp.Value?.SlotName ?? "");
-                    sb.Append(':');
-                    sb.Append(kvp.Value?.SortOrder.ToString() ?? "0");
-                    sb.Append(',');
-                }
+                sb.Append(slot);
+                sb.Append(',');
             }
-            catch { /* play-exit race */ }
+
+            sb.Append('|');
+
+            // Active panels: PanelName:SlotName:SortOrder (the facade sorts by panel name)
+            foreach (var panel in composition.panels)
+            {
+                sb.Append(panel.panelName ?? "?");
+                sb.Append(':');
+                sb.Append(panel.slotName ?? "");
+                sb.Append(':');
+                sb.Append(panel.sortOrder);
+                sb.Append(',');
+            }
 
             sb.Append('|');
 
             // World features: instance name (or prefab name)
-            try
+            foreach (var feature in composition.worldFeatures)
             {
-                foreach (var kvp in manager.ActiveWorldFeatures)
-                {
-                    sb.Append(kvp.Value != null ? kvp.Value.name : (kvp.Key != null ? kvp.Key.name : "?"));
-                    sb.Append(',');
-                }
+                sb.Append(string.IsNullOrEmpty(feature) ? "?" : feature);
+                sb.Append(',');
             }
-            catch { /* play-exit race */ }
 
             sb.Append('|');
 
             // World controllers
-            try
+            foreach (var controller in composition.worldControllers)
             {
-                foreach (var kvp in manager.ActiveWorldControllers)
-                {
-                    sb.Append(kvp.Value != null ? kvp.Value.name : (kvp.Key != null ? kvp.Key.name : "?"));
-                    sb.Append(',');
-                }
+                sb.Append(string.IsNullOrEmpty(controller) ? "?" : controller);
+                sb.Append(',');
             }
-            catch { /* play-exit race */ }
 
             sb.Append('|');
 
-            // Windows (best-effort)
+            // Active action maps
+            foreach (var map in composition.actionMaps)
+            {
+                sb.Append(map);
+                sb.Append(',');
+            }
+
+            sb.Append('|');
+
+            // Windows (best-effort — GetComposition() carries no window data by design)
             var wm = FindWindowManager();
             if (wm != null)
             {
@@ -362,36 +374,34 @@ namespace Mosaic.UI.Editor
 
         // ── Content rebuild ────────────────────────────────────────────────────
 
-        private void RebuildContent(MosaicUIManager manager)
+        private void RebuildContent(MosaicInspector.CompositionResult composition)
         {
-            RebuildModeSection(manager);
-            RebuildPanelsSection(manager);
-            RebuildWorldSection(manager);
+            RebuildModeSection(composition);
+            RebuildSlotsSection(composition);
+            RebuildPanelsSection(composition);
+            RebuildWorldSection(composition);
+            RebuildActionMapsSection(composition);
             RebuildWindowsSection();
         }
 
-        private void RebuildModeSection(MosaicUIManager manager)
+        private void RebuildModeSection(MosaicInspector.CompositionResult composition)
         {
-            _currentModeLabel.text = manager.CurrentMode?.ModeName ?? "(none)";
+            _currentModeLabel.text = string.IsNullOrEmpty(composition.currentMode)
+                ? "(none)"
+                : composition.currentMode;
 
             _historyContainer.Clear();
 
-            bool hasHistory = false;
-            try
+            foreach (var item in composition.history)
             {
-                foreach (var item in manager.History.Items)
-                {
-                    hasHistory = true;
-                    var row = new Label($"  {item?.ModeName ?? "?"}");
-                    row.style.fontSize = 11;
-                    row.style.color = new Color(0.7f, 0.7f, 0.7f);
-                    row.style.paddingLeft = 8;
-                    _historyContainer.Add(row);
-                }
+                var row = new Label($"  {(string.IsNullOrEmpty(item) ? "?" : item)}");
+                row.style.fontSize = 11;
+                row.style.color = new Color(0.7f, 0.7f, 0.7f);
+                row.style.paddingLeft = 8;
+                _historyContainer.Add(row);
             }
-            catch { /* play-exit race */ }
 
-            if (!hasHistory)
+            if (composition.history.Count == 0)
             {
                 var empty = new Label("  (empty)");
                 empty.style.fontSize = 11;
@@ -401,97 +411,92 @@ namespace Mosaic.UI.Editor
             }
         }
 
-        private void RebuildPanelsSection(MosaicUIManager manager)
+        private void RebuildSlotsSection(MosaicInspector.CompositionResult composition)
+        {
+            _slotsContainer.Clear();
+
+            foreach (var slot in composition.slots)
+                AddWorldRow(_slotsContainer, slot);
+
+            if (composition.slots.Count == 0)
+                AddEmptyLabel(_slotsContainer, "(none)");
+        }
+
+        private void RebuildPanelsSection(MosaicInspector.CompositionResult composition)
         {
             _panelsContainer.Clear();
 
-            bool hasPanels = false;
-            try
+            foreach (var panel in composition.panels)
             {
-                foreach (var kvp in manager.ActivePanels)
-                {
-                    hasPanels = true;
-                    var def = kvp.Key;
-                    var inst = kvp.Value;
+                var panelName = string.IsNullOrEmpty(panel.panelName) ? "?" : panel.panelName;
+                var slotName = string.IsNullOrEmpty(panel.slotName) ? "(no slot)" : panel.slotName;
 
-                    var panelName = def?.PanelName ?? "?";
-                    var slotName = inst?.SlotName ?? "(no slot)";
-                    var sortOrder = inst?.SortOrder ?? 0;
+                var row = new VisualElement();
+                row.style.flexDirection = FlexDirection.Row;
+                row.style.alignItems = Align.Center;
+                row.style.paddingTop = 3;
+                row.style.paddingBottom = 3;
+                row.style.paddingLeft = 4;
+                row.style.borderBottomWidth = 1;
+                row.style.borderBottomColor = new Color(0.18f, 0.18f, 0.18f);
 
-                    var row = new VisualElement();
-                    row.style.flexDirection = FlexDirection.Row;
-                    row.style.alignItems = Align.Center;
-                    row.style.paddingTop = 3;
-                    row.style.paddingBottom = 3;
-                    row.style.paddingLeft = 4;
-                    row.style.borderBottomWidth = 1;
-                    row.style.borderBottomColor = new Color(0.18f, 0.18f, 0.18f);
+                // Panel name (accent colour)
+                var nameLabel = new Label(panelName);
+                nameLabel.style.fontSize = 11;
+                nameLabel.style.color = new Color(0.6f, 0.8f, 1f);
+                nameLabel.style.minWidth = 120;
+                nameLabel.tooltip = panel.controllerTypeName;
+                row.Add(nameLabel);
 
-                    // Panel name (accent colour)
-                    var nameLabel = new Label(panelName);
-                    nameLabel.style.fontSize = 11;
-                    nameLabel.style.color = new Color(0.6f, 0.8f, 1f);
-                    nameLabel.style.minWidth = 120;
-                    row.Add(nameLabel);
+                // Arrow separator
+                var arrow = new Label("  →  ");
+                arrow.style.fontSize = 11;
+                arrow.style.color = new Color(0.45f, 0.45f, 0.45f);
+                row.Add(arrow);
 
-                    // Arrow separator
-                    var arrow = new Label("  →  ");
-                    arrow.style.fontSize = 11;
-                    arrow.style.color = new Color(0.45f, 0.45f, 0.45f);
-                    row.Add(arrow);
+                // Slot + sort info
+                var slotLabel = new Label($"slot: {slotName}   (sort {panel.sortOrder})");
+                slotLabel.style.fontSize = 11;
+                slotLabel.style.color = new Color(0.7f, 0.7f, 0.7f);
+                slotLabel.style.flexGrow = 1;
+                row.Add(slotLabel);
 
-                    // Slot + sort info
-                    var slotLabel = new Label($"slot: {slotName}   (sort {sortOrder})");
-                    slotLabel.style.fontSize = 11;
-                    slotLabel.style.color = new Color(0.7f, 0.7f, 0.7f);
-                    slotLabel.style.flexGrow = 1;
-                    row.Add(slotLabel);
-
-                    _panelsContainer.Add(row);
-                }
+                _panelsContainer.Add(row);
             }
-            catch { /* play-exit race */ }
 
-            if (!hasPanels)
+            if (composition.panels.Count == 0)
             {
                 AddEmptyLabel(_panelsContainer, "(none)");
             }
         }
 
-        private void RebuildWorldSection(MosaicUIManager manager)
+        private void RebuildWorldSection(MosaicInspector.CompositionResult composition)
         {
             _worldFeaturesContainer.Clear();
             _worldControllersContainer.Clear();
 
-            bool hasFeatures = false;
-            try
-            {
-                foreach (var kvp in manager.ActiveWorldFeatures)
-                {
-                    hasFeatures = true;
-                    var displayName = kvp.Value != null ? kvp.Value.name : (kvp.Key != null ? kvp.Key.name : "?");
-                    AddWorldRow(_worldFeaturesContainer, displayName);
-                }
-            }
-            catch { /* play-exit race */ }
+            foreach (var feature in composition.worldFeatures)
+                AddWorldRow(_worldFeaturesContainer, string.IsNullOrEmpty(feature) ? "?" : feature);
 
-            if (!hasFeatures)
+            if (composition.worldFeatures.Count == 0)
                 AddEmptyLabel(_worldFeaturesContainer, "(none)");
 
-            bool hasControllers = false;
-            try
-            {
-                foreach (var kvp in manager.ActiveWorldControllers)
-                {
-                    hasControllers = true;
-                    var displayName = kvp.Value != null ? kvp.Value.name : (kvp.Key != null ? kvp.Key.name : "?");
-                    AddWorldRow(_worldControllersContainer, displayName);
-                }
-            }
-            catch { /* play-exit race */ }
+            foreach (var controller in composition.worldControllers)
+                AddWorldRow(_worldControllersContainer, string.IsNullOrEmpty(controller) ? "?" : controller);
 
-            if (!hasControllers)
+            if (composition.worldControllers.Count == 0)
                 AddEmptyLabel(_worldControllersContainer, "(none)");
+        }
+
+        private void RebuildActionMapsSection(MosaicInspector.CompositionResult composition)
+        {
+            _actionMapsContainer.Clear();
+
+            foreach (var map in composition.actionMaps)
+                AddWorldRow(_actionMapsContainer, map);
+
+            if (composition.actionMaps.Count == 0)
+                AddEmptyLabel(_actionMapsContainer, "(none)");
         }
 
         private void RebuildWindowsSection()

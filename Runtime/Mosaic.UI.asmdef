@@ -1,7 +1,7 @@
 {
   "name": "Mosaic.UI",
   "rootNamespace": "Mosaic.UI",
-  "references": ["Unity.InputSystem"],
+  "references": ["Unity.InputSystem", "Unity.Mathematics"],
   "includePlatforms": [],
   "excludePlatforms": [],
   "allowUnsafeCode": false,

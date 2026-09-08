@@ -20,6 +20,10 @@ namespace Mosaic.UI
             Events = new EventBus();
             Commands = new CommandRegistry();
             Input = new InputService(Events);
+#if UNITY_EDITOR
+            // Editor-only: keep the last 64 published events for MosaicInspector.GetRecentEvents.
+            EventRecorder.Attach(Events);
+#endif
             IsInitialized = true;
         }
 
@@ -28,6 +32,9 @@ namespace Mosaic.UI
             if (!IsInitialized)
                 return;
 
+#if UNITY_EDITOR
+            EventRecorder.Detach(Events);
+#endif
             Commands.Clear();
             Events.Clear();
             Services.Clear();

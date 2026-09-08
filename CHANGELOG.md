@@ -4,6 +4,33 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.4.0] - 2026-09-08
+
+### Added
+
+- **Inspection facade** (`MosaicInspector`) — new `Runtime/Inspection/` module, `Mosaic.UI` namespace. A public, read-only view of the runtime that any assembly with a `Mosaic.UI` reference can call, with no `InternalsVisibleTo` entry. Built for a CLI or an agent that polls the Editor
+  - Six static methods: `GetServices()`, `GetStore(string typeName)`, `GetStores()`, `GetComposition()`, `GetCommands()`, and `GetRecentEvents(int max)`. No method throws, no method mutates state, and no method holds a subscription
+  - Every result is a nested `[Serializable]` class with public fields only (`ServiceListResult`, `StoreInfo`, `StoreListResult`, `CompositionResult`, `CommandListResult`, `EventListResult` and their item classes). `JsonUtility` and Newtonsoft both serialize each result with no converter. Every list is non-null on every return path
+  - Flags carry every failure: `initialized = false` when `MosaicUI` is down, `hasManager = false` when no `MosaicUIManager` exists, `found = false` when a store name does not resolve. A play-exit race yields a partial result with no log line
+  - Store values arrive as JSON-safe text in a `value` string with the CLR type in a `type` field: primitives, enums, `Vector2/3/4`, `Quaternion`, `float2/3/4`, collections as `{count: N, items: [first 20]}`, and a `TypeName: ToString()` fallback trimmed to 200 characters. A throwing getter renders `<error: ExceptionTypeName>`
+  - `GetStore` resolves a name by exact `FullName`, then exact `Name`, then case-insensitive `Name`
+  - Deterministic ordering: services, stores, panels, slots, commands, action maps, and world objects sort ordinal. History keeps stack order (most recent first). Values keep declaration order. Events ascend by sequence. Two identical states produce identical JSON
+  - `StoreReflectionCache` (internal) — the `[CreateProperty]` member walk, cached once per `Type`. `InspectionValueFormatter` (internal) — the value formatting rules
+  - `EventRecorder` (internal, `#if UNITY_EDITOR`) — a 64-entry ring buffer over `EventBus.Published` with a sequence that restarts at 1 on each `MosaicUI.Initialize()`. It stores a trimmed summary, never the payload. A player build compiles it to nothing, and `GetRecentEvents` returns an empty list there
+- **Layout**
+  - `MosaicUIManager.Instance` (public static) — the manager that awoke most recently. Set in `Awake`, cleared in `OnDestroy`. A second manager logs one `[MosaicUI]` warning and takes the slot. The setter is `internal` as an EditMode test seam
+- **Editor Debugger**
+  - The **Composition** tab gains a **Slots** section and an **Action Maps** section. Each panel row shows its controller type name as a tooltip
+  - The **State** tab value table gains a **Type** column
+- **Tests** — `MosaicInspectorTests` (28 Edit Mode tests: every facade method, the `initialized = false` branch, the formatter rules, the ring buffer wrap, and a `JsonUtility` round trip)
+- **Documentation** — `Documentation~/Inspection.md` (the facade, the result shapes, the formatting and ordering rules, the guard contract, the main-thread rule, and usage from a consumer assembly and from the Unity CLI). README gains an "Inspection (CLI / agents)" concept entry and a `MosaicInspector` API entry
+
+### Changed
+
+- The debugger **State** and **Composition** panes now read through `MosaicInspector` instead of the `internal` seams. `StateInspectorPane` no longer owns the `[CreateProperty]` reflection walk, and `CompositionInspectorPane` no longer calls `FindFirstObjectByType` on each poll. The live `propertyChanged` push update, the 500 ms poll cadence, the Windows section, and every empty-state message are unchanged
+- `MosaicUI.Initialize()` attaches the editor-only `EventRecorder` after it constructs `Events`. `MosaicUI.Shutdown()` detaches and clears it before the existing teardown. Both lines are inside `#if UNITY_EDITOR`
+- **Dependency:** `Runtime/Mosaic.UI.asmdef` now references `Unity.Mathematics`, and `package.json` declares `com.unity.mathematics` (1.3.3) — **MosaicUI now requires the Unity Mathematics package** (resolved automatically by UPM, and already present in every URP project). The test assembly references it too
+
 ## [0.3.0] - 2026-06-06
 
 ### Added

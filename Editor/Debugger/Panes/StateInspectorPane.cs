@@ -1,7 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Reflection;
-using Unity.Properties;
 using UnityEngine;
 using UnityEngine.UIElements;
 
@@ -9,8 +7,14 @@ namespace Mosaic.UI.Editor
 {
     /// <summary>
     /// State Inspector pane — lists every entry in MosaicUI.Services, distinguished by whether
-    /// the entry is a store (INotifyBindablePropertyChanged). For stores, a two-column value table
-    /// is shown for all members decorated with [CreateProperty], updated live via propertyChanged.
+    /// the entry is a store (INotifyBindablePropertyChanged). For stores, a value table is shown
+    /// for all members decorated with [CreateProperty], updated live via propertyChanged.
+    ///
+    /// Data source (since 0.4.0):
+    ///   The value table is built from the public MosaicInspector.GetStore(fullName) facade —
+    ///   the same door the CLI uses — so the walk and the formatting cannot drift between
+    ///   the two readers. The pane still enumerates Services.Entries itself, because it needs
+    ///   the live store object to subscribe to propertyChanged.
     ///
     /// Live-update mechanism (push, not poll):
     ///   Attach() subscribes each store's INotifyBindablePropertyChanged.propertyChanged.
@@ -270,13 +274,13 @@ namespace Mosaic.UI.Editor
                 var tableContainer = new VisualElement();
                 container.Add(tableContainer);
 
-                PopulateValueTable(tableContainer, value);
+                PopulateValueTable(tableContainer, keyType);
 
-                // Subscribe push update — capture tableContainer and value for targeted refresh.
+                // Subscribe push update — capture tableContainer and keyType for targeted refresh.
                 // The sender/args are not needed; only the fact that a property changed matters.
                 EventHandler<BindablePropertyChangedEventArgs> handler = (sender, args) =>
                 {
-                    PopulateValueTable(tableContainer, value);
+                    PopulateValueTable(tableContainer, keyType);
                 };
                 notifier.propertyChanged += handler;
 
@@ -295,21 +299,25 @@ namespace Mosaic.UI.Editor
         // ── Value table ────────────────────────────────────────────────────────
 
         /// <summary>
-        /// Reflects all [CreateProperty]-annotated members on the store object and renders a
-        /// two-column table (member name → current value string). Clears and rebuilds each call.
-        /// Each individual value read is wrapped in try/catch so a throwing getter degrades to
-        /// an error placeholder instead of breaking the pane.
+        /// Renders the store's [CreateProperty] members as a three-column table
+        /// (member name → CLR type → formatted value). Clears and rebuilds each call.
+        ///
+        /// The rows come from MosaicInspector.GetStore(fullName), which never throws: a
+        /// framework that is down, a store that disappeared, or a store with no annotated
+        /// member all arrive as an empty value list, and a throwing getter arrives as the
+        /// inline "&lt;error: TypeName&gt;" placeholder in the value column.
         /// </summary>
-        private void PopulateValueTable(VisualElement container, object storeObj)
+        private void PopulateValueTable(VisualElement container, Type keyType)
         {
             container.Clear();
 
-            if (storeObj == null)
+            if (keyType == null)
                 return;
 
-            var members = GetCreatePropertyMembers(storeObj.GetType());
+            // Read through the public facade — the same path the CLI takes.
+            var info = MosaicInspector.GetStore(keyType.FullName);
 
-            if (members.Count == 0)
+            if (!info.found || info.values.Count == 0)
             {
                 var noProps = new Label("  (no [CreateProperty] members)");
                 noProps.style.fontSize = 10;
@@ -319,39 +327,32 @@ namespace Mosaic.UI.Editor
                 return;
             }
 
-            foreach (var (name, memberInfo) in members)
+            foreach (var value in info.values)
             {
-                string valueStr;
-                try
-                {
-                    object rawValue = memberInfo switch
-                    {
-                        PropertyInfo pi => pi.GetValue(storeObj),
-                        FieldInfo fi => fi.GetValue(storeObj),
-                        _ => null
-                    };
-                    valueStr = rawValue?.ToString() ?? "null";
-                }
-                catch (Exception ex)
-                {
-                    // Degrade gracefully — show error placeholder, do not rethrow.
-                    valueStr = $"<error: {ex.GetType().Name}>";
-                }
-
                 var row = new VisualElement();
                 row.style.flexDirection = FlexDirection.Row;
                 row.style.paddingLeft = 8;
                 row.style.paddingTop = 1;
                 row.style.paddingBottom = 1;
 
-                var nameLabel = new Label(name);
+                var nameLabel = new Label(value.name);
                 nameLabel.style.fontSize = 11;
                 nameLabel.style.color = new Color(0.7f, 0.85f, 1f);
                 nameLabel.style.width = 140;
                 nameLabel.style.minWidth = 80;
+                nameLabel.style.flexShrink = 0;
                 row.Add(nameLabel);
 
-                var valueLabel = new Label(valueStr);
+                var typeLabel = new Label(value.type ?? string.Empty);
+                typeLabel.style.fontSize = 10;
+                typeLabel.style.color = new Color(0.5f, 0.55f, 0.6f);
+                typeLabel.style.width = 110;
+                typeLabel.style.minWidth = 60;
+                typeLabel.style.flexShrink = 0;
+                typeLabel.style.unityTextAlign = TextAnchor.MiddleLeft;
+                row.Add(typeLabel);
+
+                var valueLabel = new Label(value.value ?? string.Empty);
                 valueLabel.style.fontSize = 11;
                 valueLabel.style.color = new Color(0.85f, 0.85f, 0.85f);
                 valueLabel.style.flexGrow = 1;
@@ -360,58 +361,6 @@ namespace Mosaic.UI.Editor
 
                 container.Add(row);
             }
-        }
-
-        // ── Reflection helpers ─────────────────────────────────────────────────
-
-        /// <summary>
-        /// Enumerates all public and non-public instance properties and fields on the type
-        /// (and its base types) that carry [CreateProperty]. Deduplicates by member name —
-        /// if a property and its backing field both carry [CreateProperty], the property wins.
-        /// Returns a list of (displayName, MemberInfo) in declaration order.
-        /// </summary>
-        private static List<(string name, MemberInfo member)> GetCreatePropertyMembers(Type type)
-        {
-            var result = new List<(string, MemberInfo)>();
-            var seenNames = new HashSet<string>(StringComparer.Ordinal);
-
-            const BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
-
-            // Walk the full inheritance chain (excluding object / Store<TSelf> internals).
-            var searchTypes = new List<Type>();
-            var t = type;
-            while (t != null && t != typeof(object))
-            {
-                searchTypes.Insert(0, t); // base types first for natural ordering
-                t = t.BaseType;
-            }
-
-            foreach (var searchType in searchTypes)
-            {
-                // Properties first (they shadow backing fields with the same logical name).
-                foreach (var pi in searchType.GetProperties(flags | BindingFlags.DeclaredOnly))
-                {
-                    if (!Attribute.IsDefined(pi, typeof(CreatePropertyAttribute), inherit: false))
-                        continue;
-                    if (seenNames.Contains(pi.Name))
-                        continue;
-                    seenNames.Add(pi.Name);
-                    result.Add((pi.Name, pi));
-                }
-
-                // Fields — only if not already covered by a property of the same name.
-                foreach (var fi in searchType.GetFields(flags | BindingFlags.DeclaredOnly))
-                {
-                    if (!Attribute.IsDefined(fi, typeof(CreatePropertyAttribute), inherit: false))
-                        continue;
-                    if (seenNames.Contains(fi.Name))
-                        continue;
-                    seenNames.Add(fi.Name);
-                    result.Add((fi.Name, fi));
-                }
-            }
-
-            return result;
         }
 
         // ── Services rescan poll ───────────────────────────────────────────────
